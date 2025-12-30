@@ -60,6 +60,7 @@ function App() {
        >
          Cerrar Sesión
        </button>
+
        <Notes session={session} supabase={supabase} />
     </div>
   );

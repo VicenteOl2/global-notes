@@ -21,6 +21,10 @@ const Acordeon = ({ titulo, children }) => {
 
 // COMPONENTE PRINCIPAL
 function Notes({ session, supabase }) {  
+  const correo = session?.user?.email || "Usuario";
+  const nombreUsuario = correo.split('@')[0];
+  
+  const nombreFinal = nombreUsuario.charAt(0).toUpperCase() + nombreUsuario.slice(1);
   const [notas, setNotas] = useState([]);
   const [texto, setTexto] = useState("");
   
@@ -166,7 +170,7 @@ function Notes({ session, supabase }) {
       <div className="bg-slate-800 p-8 rounded-2xl shadow-2xl w-full max-w-md border border-slate-700">
         
         <h1 className="text-4xl font-extrabold text-transparent bg-clip-text bg-gradient-to-r from-blue-400 to-purple-500 text-center mb-6">
-          Notas de Vicente 🚀
+          Notas de {nombreFinal} 🚀
         </h1>
 
         {/* --- PANEL DE CATEGORÍAS --- */}
