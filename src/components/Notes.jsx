@@ -1,159 +1,215 @@
-import { useState, useEffect, useCallback } from 'react' // 👈 Importamos useCallback
+import React, { useState, useEffect, useCallback } from 'react';
 import { GoogleGenerativeAI } from "@google/generative-ai";
 
+// COMPONENTE ACORDEÓN (Fuera del principal para optimizar rendimiento)
+const Acordeon = ({ titulo, children }) => {
+  const [abierto, setAbierto] = useState(true);
+
+  return (
+    <div className="mb-4 overflow-hidden rounded-lg border border-slate-700 bg-slate-800/50">
+      <button
+        onClick={() => setAbierto(!abierto)}
+        className="flex w-full items-center justify-between bg-slate-700/50 p-3 text-left transition-colors hover:bg-slate-700"
+      >
+        <span className="font-semibold text-slate-200">{titulo}</span>
+        <span className="text-slate-400">{abierto ? '➖' : '➕'}</span>
+      </button>
+      {abierto && <div className="p-2">{children}</div>}
+    </div>
+  );
+};
+
+// COMPONENTE PRINCIPAL
 function Notes({ session, supabase }) {  
-  const [notas, setNotas] = useState([])
-  const [texto, setTexto] = useState("")
+  const [notas, setNotas] = useState([]);
+  const [texto, setTexto] = useState("");
   
+  // --- NUEVOS ESTADOS PARA CATEGORÍAS ---
+  const [categoriasDisponibles, setCategoriasDisponibles] = useState(["General"]); // Lista maestra
+  const [categoriaSeleccionada, setCategoriaSeleccionada] = useState("General"); // Selección actual
+  const [nuevaCategoriaInput, setNuevaCategoriaInput] = useState(""); // Input para crear nueva
+
   // Estados para la IA
   const [mostrarIA, setMostrarIA] = useState(false);
   const [prompt, setPrompt] = useState("");          
   const [respuestaIA, setRespuestaIA] = useState("");
   const [cargando, setCargando] = useState(false);   
 
-  // 1. Consulta que trae las notas desde Supabase
+  // 1. CARGAR NOTAS
   const fetchNotas = useCallback(async () => {
     const { data } = await supabase
       .from('notas')
       .select('*')
       .eq('user_id', session.user.id)
-      .order('id', { ascending: false })
+      .order('id', { ascending: false });
 
-    if (data) setNotas(data) 
-  }, [session, supabase])
+    if (data) {
+      setNotas(data);
+      
+      // Lógica Inteligente: Extraer categorías que ya existen en la BD
+      const categoriasDeBD = [...new Set(data.map(n => n.categoria || "General"))];
+      // Unimos las de la BD con las que tengamos por defecto, sin repetir
+      setCategoriasDisponibles(prev => [...new Set([...prev, ...categoriasDeBD])]);
+    }
+  }, [session, supabase]);
 
-  // 2. EFECTO: Cargar notas al iniciar
   useEffect(() => {
-    fetchNotas()
-  }, [fetchNotas])
+    fetchNotas();
+  }, [fetchNotas]);
 
-  // 3. AGREGAR NOTA (A LA NUBE)
+  // --- FUNCIÓN PARA CREAR CATEGORÍA ---
+  const handleCrearCategoria = () => {
+    const nombreLimpio = nuevaCategoriaInput.trim();
+    if (nombreLimpio && !categoriasDisponibles.includes(nombreLimpio)) {
+      setCategoriasDisponibles([...categoriasDisponibles, nombreLimpio]);
+      setCategoriaSeleccionada(nombreLimpio); // La seleccionamos automáticamente
+      setNuevaCategoriaInput(""); // Limpiamos el input
+    }
+  };
+
+  // 3. AGREGAR NOTA (Ahora con categoría)
   const agregarNota = async (e) => {
-    if (e) e.preventDefault()
-    if (!texto.trim()) return 
+    if (e) e.preventDefault();
+    if (!texto.trim()) return; 
 
-    await supabase
+    const { error } = await supabase
       .from('notas')
-      .insert([{ texto: texto, user_id: session.user.id }])
+      .insert([{ 
+        texto: texto, 
+        user_id: session.user.id,
+        categoria: categoriaSeleccionada // 👈 Guardamos la relación
+      }]);
     
-    setTexto("")
-    fetchNotas() // Recargar lista
+    if (!error) {
+      setTexto("");
+      fetchNotas(); 
+    } else {
+      console.error("Error al guardar:", error);
+      alert("Error: ¿Creaste la columna 'categoria' en Supabase?");
+    }
   }
 
-  // 4. COMPLETAR / DESCOMPLETAR (EN LA NUBE)
+  // 4. COMPLETAR / DESCOMPLETAR
   const toggleCompletada = async (id, estadoActual) => {
-    // Ya no usamos map local, le decimos a Supabase que actualice
     await supabase
       .from('notas')
       .update({ completada: !estadoActual })
-      .eq('id', id)
-    
-    fetchNotas() // Recargar para ver el cambio
+      .eq('id', id);
+    fetchNotas(); 
   }
 
-  // 5. ELIMINAR NOTA (EN LA NUBE)
+  // 5. ELIMINAR NOTA
   const eliminarNota = async (id) => {
-    await supabase.from('notas').delete().eq('id', id)
-    fetchNotas()
+    await supabase.from('notas').delete().eq('id', id);
+    fetchNotas();
   }
 
-  // 6. IA: CHAT GENERAL
-  const consultarIA = async () => {
+// 6. IA: LIBERTAD (Pero con Formato Estricto)
+  const crearTareasDesdePrompt = async () => {
     if (!prompt.trim()) return; 
     setCargando(true);
-    setRespuestaIA("");
+    setRespuestaIA(""); 
 
     try {
       const genAI = new GoogleGenerativeAI(import.meta.env.VITE_GEMINI_KEY);
-      const model = genAI.getGenerativeModel({ model: "gemini-2.5-flash" }); // Actualizado a flash
-      const result = await model.generateContent(prompt);
-      const response = await result.response;
-      setRespuestaIA(response.text());
-    } catch (error) {
-      console.error("Error IA:", error);
-      setRespuestaIA("Error al conectar con la IA.");
-    } finally {
-      setCargando(false);
-    }
-  };
+      const model = genAI.getGenerativeModel({ model: "gemini-2.5-flash" }); // Asegúrate de usar 1.5
 
-  // 7. IA: GENERAR RUTINA (Y GUARDARLA EN BD)
-  // 7. IA: GENERAR RUTINA MEJORADA (Versión Robusta)
-  const generarRutina = async () => {
-    setCargando(true);
-    try {
-      const genAI = new GoogleGenerativeAI(import.meta.env.VITE_GEMINI_KEY);
-      const model = genAI.getGenerativeModel({ model: "gemini-2.5-flash" }); // Usamos 1.5 que es muy estable
-
-      // Prompt más claro para evitar errores de formato
-      const promptRutina = `
-        Genera 3 tareas breves para un estudiante universitario de informática.
-        Responde SOLO con una lista simple, una tarea por línea, empezando con un guion (-).
-        Ejemplo:
-        - Repasar SQL
-        - Caminar 20 min
-        - Dormir temprano
+      // 🧠 EL TRUCO: Le pegamos una instrucción técnica al final de TU pedido.
+      // El usuario no lo ve, pero la IA sí.
+      const promptConFormato = `
+        ${prompt}
+        
+        ---
+        INSTRUCCIONES DE FORMATO OBLIGATORIAS:
+        1. Responde ÚNICAMENTE con una lista de tareas cortas.
+        2. NO incluyas saludos, introducciones ("Claro, aquí tienes..."), ni despedidas.
+        3. NO uses negritas (**texto**) ni formatos raros.
+        4. Cada tarea debe ser una línea nueva.
+        5. Máximo 10 palabras por tarea.
       `;
 
-      const result = await model.generateContent(promptRutina);
+      const result = await model.generateContent(promptConFormato);
       const text = result.response.text();
       
-      console.log("Respuesta IA:", text); // Para ver en consola (F12) qué respondió
-
-      // Separamos por líneas (enter) en vez de símbolos raros
       const lineas = text.split('\n');
       let contador = 0;
-      let textoParaMostrar = "";
 
       for (const linea of lineas) {
-        // Limpiamos guiones, asteriscos y espacios
-        const tareaLimpia = linea.replace(/^[-*•]\s*/, '').trim();
+        // Limpiamos cualquier símbolo que la IA haya puesto (guiones, números, puntos)
+        const tareaLimpia = linea.replace(/^[-*•\d]+\.?\s*/, '').replace(/\*\*/g, '').trim();
 
-        if (tareaLimpia.length > 3) {
-            // Guardamos en Supabase
-            const { error } = await supabase.from('notas').insert([
-                { texto: tareaLimpia, user_id: session.user.id, completada: false }
-            ]);
-            
-            if (!error) {
-                contador++;
-                textoParaMostrar += `✅ ${tareaLimpia}\n`;
-            }
+        // Filtramos: Solo si tiene texto y no parece una frase de despedida
+        if (tareaLimpia.length > 2 && !tareaLimpia.includes("suerte") && !tareaLimpia.includes(":")) {
+            await supabase.from('notas').insert([{ 
+                texto: tareaLimpia, 
+                user_id: session.user.id, 
+                completada: false,
+                categoria: categoriaSeleccionada 
+            }]);
+            contador++;
         }
       }
 
-      // Refrescamos la lista visual
       fetchNotas(); 
-
-      // Feedback real al usuario
-      if (contador > 0) {
-          setRespuestaIA(`¡Listo! Agregué estas ${contador} tareas:\n\n${textoParaMostrar}`);
-      } else {
-          setRespuestaIA("La IA respondió, pero no pude detectar tareas válidas. Intenta de nuevo.");
-      }
+      setPrompt(""); 
+      setRespuestaIA(`🤖 ¡Listo! Se crearon ${contador} tareas concretas.`);
 
     } catch (error) {
-      console.error("Error rutina:", error);
-      setRespuestaIA("Hubo un error al conectar con la IA.");
+      console.error("Error IA:", error);
+      setRespuestaIA("Error al conectar.");
     } finally {
       setCargando(false);
     }
   };
-
   return (
     <div className="min-h-screen bg-slate-900 flex items-center justify-center p-4">
       <div className="bg-slate-800 p-8 rounded-2xl shadow-2xl w-full max-w-md border border-slate-700">
         
-        <h1 className="text-4xl font-extrabold text-transparent bg-clip-text bg-gradient-to-r from-blue-400 to-purple-500 text-center mb-8">
+        <h1 className="text-4xl font-extrabold text-transparent bg-clip-text bg-gradient-to-r from-blue-400 to-purple-500 text-center mb-6">
           Notas de Vicente 🚀
         </h1>
 
-        {/* INPUT */}
+        {/* --- PANEL DE CATEGORÍAS --- */}
+        <div className="mb-6 p-4 bg-slate-900/50 rounded-xl border border-slate-700">
+          <label className="text-xs text-blue-300 font-bold uppercase mb-2 block">1. Selecciona o Crea Categoría:</label>
+          
+          <div className="flex flex-col gap-3">
+            {/* Selector */}
+            <select 
+              value={categoriaSeleccionada}
+              onChange={(e) => setCategoriaSeleccionada(e.target.value)}
+              className="w-full p-2 bg-slate-800 text-white rounded border border-slate-600 outline-none focus:border-blue-500"
+            >
+              {categoriasDisponibles.map(cat => (
+                <option key={cat} value={cat}>{cat}</option>
+              ))}
+            </select>
+
+            {/* Creador */}
+            <div className="flex gap-2">
+              <input 
+                type="text"
+                placeholder="Nueva categoría..."
+                value={nuevaCategoriaInput}
+                onChange={(e) => setNuevaCategoriaInput(e.target.value)}
+                className="flex-1 p-2 bg-slate-800 text-sm text-white rounded border border-slate-600 outline-none"
+              />
+              <button 
+                onClick={handleCrearCategoria}
+                className="bg-purple-600 hover:bg-purple-500 text-white px-3 py-1 rounded text-sm font-bold transition-colors"
+              >
+                + Crear
+              </button>
+            </div>
+          </div>
+        </div>
+
+        {/* --- INPUT DE TAREA --- */}
         <div className="flex gap-2 mb-8">
             <input 
               type="text" 
               className="w-full p-3 rounded-lg bg-slate-700 text-white placeholder-slate-400 outline-none focus:ring-2 focus:ring-blue-500 transition-all"
-              placeholder="¿Qué vamos a hacer hoy?"
+              placeholder={`Tarea para "${categoriaSeleccionada}"...`}
               value={texto}
               onChange={(e) => setTexto(e.target.value)}
               onKeyDown={(e) => e.key === 'Enter' && agregarNota(e)}
@@ -166,38 +222,56 @@ function Notes({ session, supabase }) {
             </button>
         </div>
 
-        {/* LISTA DE NOTAS */}
-        <ul className="space-y-3">
-          {notas.map((nota) => (
-            <li key={nota.id} className="flex items-center justify-between bg-slate-700/50 p-3 rounded-lg hover:bg-slate-700 transition-colors group">
-              <div className="flex items-center gap-3 overflow-hidden">
-                <input 
-                  type="checkbox" 
-                  checked={nota.completada} 
-                  // 👇 IMPORTANTE: Pasamos el estado actual para invertirlo
-                  onChange={() => toggleCompletada(nota.id, nota.completada)} 
-                  className="w-5 h-5 accent-blue-500 cursor-pointer rounded"
-                />
-                <span className={`break-words w-full ${nota.completada ? 'line-through text-slate-500' : 'text-slate-100'}`}>
-                  {nota.texto}
-                </span>
-              </div>
-              <button 
-                onClick={() => eliminarNota(nota.id)}
-                className="text-red-400 hover:text-red-300 p-2 opacity-0 group-hover:opacity-100 transition-all"
-              >
-                🗑️
-              </button>
-            </li>
-          ))}
+        {/* --- LISTA DE NOTAS (Con Acordeones) --- */}
+        <div className="space-y-2">
+          {categoriasDisponibles.map(cat => {
+            // Filtramos las notas de esta categoría
+            const notasDeCategoria = notas.filter(n => (n.categoria || "General") === cat);
+            
+            // Solo mostramos el acordeón si tiene notas O si es la categoría activa actualmente
+            if (notasDeCategoria.length === 0 && cat !== categoriaSeleccionada) return null;
+
+            return (
+              <Acordeon key={cat} titulo={`${cat} (${notasDeCategoria.length})`}>
+                {notasDeCategoria.length === 0 ? (
+                  <p className="text-slate-500 text-sm italic p-2">Sin tareas aún...</p>
+                ) : (
+                  <ul className="space-y-2">
+                    {notasDeCategoria.map((nota) => (
+                      <li key={nota.id} className="flex items-center justify-between bg-slate-900 p-3 rounded hover:bg-black/20 transition-colors group">
+                        <div className="flex items-center gap-3 overflow-hidden">
+                          <input 
+                            type="checkbox" 
+                            checked={nota.completada} 
+                            onChange={() => toggleCompletada(nota.id, nota.completada)} 
+                            className="w-4 h-4 accent-blue-500 cursor-pointer"
+                          />
+                          <span className={`text-sm break-words w-full ${nota.completada ? 'line-through text-slate-500' : 'text-slate-200'}`}>
+                            {nota.texto}
+                          </span>
+                        </div>
+                        <button 
+                          onClick={() => eliminarNota(nota.id)}
+                          className="text-red-400 hover:text-red-300 opacity-0 group-hover:opacity-100 transition-opacity text-xs"
+                        >
+                          🗑️
+                        </button>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </Acordeon>
+            );
+          })}
+          
           {notas.length === 0 && (
             <p className="text-center text-slate-500 text-sm mt-4">Lista vacía. ¡Agrega algo! 😴</p>
           )}
-        </ul>
+        </div>
 
         <hr className="my-6 border-slate-700" />
 
-        {/* BOTÓN IA */}
+       {/* BOTÓN IA */}
         <button 
           onClick={() => setMostrarIA(!mostrarIA)}
           className="w-full py-2 px-4 bg-gradient-to-r from-purple-600 to-indigo-600 text-white font-bold rounded-lg shadow-lg"
@@ -208,35 +282,26 @@ function Notes({ session, supabase }) {
         {/* PANEL IA */}
         {mostrarIA && (
           <div className="mt-4 p-4 bg-slate-900/50 rounded-xl border border-purple-500/30">
-             <div className="flex gap-2 mb-4">
-              <button
-                onClick={generarRutina}
-                disabled={cargando}
-                className="bg-green-600 hover:bg-green-500 text-white text-xs font-bold py-2 px-3 rounded-lg w-full"
-              >
-                ⚡ Generar Rutina Diaria
-              </button>
-            </div>
-
             <div className="flex gap-2">
               <input 
                 type="text" 
-                className="w-full p-2 rounded-lg bg-slate-800 text-white border border-slate-700 text-sm"
-                placeholder="Pregunta algo..."
+                className="w-full p-2 rounded-lg bg-slate-800 text-white border border-slate-700 text-sm outline-none focus:border-purple-500"
+                placeholder="Escribe aquí (ej: 'Rutina de pesas para hombro')..."
                 value={prompt}
                 onChange={(e) => setPrompt(e.target.value)}
+                onKeyDown={(e) => e.key === 'Enter' && crearTareasDesdePrompt()}
               />
               <button 
-                onClick={consultarIA}
+                onClick={crearTareasDesdePrompt}
                 disabled={cargando}
-                className="bg-purple-600 text-white p-2 rounded-lg text-sm"
+                className="bg-purple-600 hover:bg-purple-500 text-white p-2 rounded-lg text-sm font-bold min-w-[80px] transition-all"
               >
-                Enviar
+                {cargando ? '🤖...' : 'Enviar'}
               </button>
             </div>
 
             {respuestaIA && (
-              <div className="mt-4 p-3 bg-slate-800 rounded-lg border border-slate-700 text-slate-300 text-sm">
+              <div className="mt-4 p-3 bg-slate-800 rounded-lg border border-slate-700 text-slate-300 text-sm whitespace-pre-wrap">
                 {respuestaIA}
               </div>
             )}
@@ -245,7 +310,7 @@ function Notes({ session, supabase }) {
 
       </div>
     </div>
-  )
+  );
 }
 
 export default Notes;
